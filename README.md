@@ -39,7 +39,7 @@ Setup Instructions
 
 2. Install Dependencies  
    Make sure you have Python 3.10+ installed. Then run:  
-   `pip install discord.py pandas python-dotenv`
+   `pip install -r requirements.txt`
 
 3. Set Up Your Environment  
    Create a `.env` file in the root directory and add your Discord bot token:  

@@ -1,9 +1,8 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import pandas as pd
 import os
 import asyncio
-import random
 from dotenv import load_dotenv
 
 # Load bot token
@@ -25,7 +24,7 @@ def log_event(message):
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # State
 state = {
@@ -48,7 +47,6 @@ async def on_ready():
 @bot.command()
 async def join(ctx, team_name):
     user = ctx.author.name
-    # Remove from previous team if present
     for team in state["teams"]:
         if user in state["teams"][team]:
             state["teams"][team].remove(user)
@@ -114,8 +112,8 @@ async def auto_skip_if_no_buzz(ctx):
     await asyncio.sleep(60)
     if not state["buzzed_team"]:
         answer = state["current_question"].get("answer", "Not provided")
-        await ctx.send(f"⏰ No one buzzed. Moving on! The correct answer was: **{answer}**")
-        log_event(f"Q{state['question_count']}: No buzz | Answer: {answer}")
+        await ctx.send(f"⏰ No one buzzed. Moving on!")
+        log_event(f"Q{state['question_count']}: No buzz")
         state["question_active"] = False
         await asyncio.sleep(5)
         await ask_next(ctx)
@@ -127,29 +125,25 @@ async def buzz(ctx):
         return
 
     user = ctx.author.name
-    for team, members in state["teams"].items():
-        if user in members:
-            if team in state["buzz_order"] or team == state["buzzed_team"]:
-                await ctx.send("⚠️ Your team has already buzzed.")
-                return
+    team = next((t for t, m in state["teams"].items() if user in m), None)
+    if not team:
+        await ctx.send("⚠️ You're not part of any team.")
+        return
 
-            if state.get("no_buzz_timer"):
-                state["no_buzz_timer"].cancel()
-                state["no_buzz_timer"] = None
+    if team == state["buzzed_team"] or team in state["buzz_order"]:
+        await ctx.send("⚠️ Your team has already buzzed.")
+        return
 
-            state["buzz_order"].append(team)
-            if not state["buzzed_team"]:
-                state["buzzed_team"] = team
-                state["buzz_order"].remove(team)
-                await ctx.send(f"🔔 **{team}** buzzed first! You have 30 seconds to answer.")
-                state["answer_timer"] = asyncio.create_task(start_answer_timer(ctx, team))
-            else:
-                await ctx.send(f"🔔 **{team}** added to buzz queue.")
-            return
+    if state.get("no_buzz_timer"):
+        state["no_buzz_timer"].cancel()
+        state["no_buzz_timer"] = None
 
-    await ctx.send("⚠️ You're not part of any team.")
+    state["buzz_order"].append(team)
+    await ctx.send(f"🔔 **{team}** buzzed!")
+    if not state["buzzed_team"]:
+        await pass_to_next_buzzer(ctx)
 
-async def start_answer_timer(ctx, team):
+async def answer_timer(ctx, team):
     try:
         for t in [30, 25, 20, 15, 10, 5]:
             await ctx.send(f"⏳ **{team}** has {t} seconds left...")
@@ -166,40 +160,38 @@ async def pass_to_next_buzzer(ctx):
         state["answer_timer"].cancel()
         state["answer_timer"] = None
 
-    if state.get("no_buzz_timer"):
-        state["no_buzz_timer"].cancel()
-        state["no_buzz_timer"] = None
-
-    state["buzzed_team"] = None
-
-    while state["buzz_order"]:
-        next_team = state["buzz_order"].pop(0)
-        state["buzzed_team"] = next_team
-        await ctx.send(f"🔔 Now **{next_team}** may answer. You have 30 seconds!")
-        state["answer_timer"] = asyncio.create_task(start_answer_timer(ctx, next_team))
+    if not state["buzz_order"]:
+        answer = state["current_question"].get("answer", "Not provided")
+        await ctx.send(f"❌ No more teams buzzed.")
+        log_event(f"{state['current_question']['id']}: No more buzzers.")
+        state["question_active"] = False
+        await asyncio.sleep(5)
+        await ask_next(ctx)
         return
 
-    await ctx.send("❌ No more teams buzzed in. Moving to next question...")
-    state["question_active"] = False
-    await asyncio.sleep(10)
-    await ask_next(ctx)
+    team = state["buzz_order"].pop(0)
+    state["buzzed_team"] = team
+    await ctx.send(f"🕒 **{team}**, you have 30 seconds to answer!")
+    state["answer_timer"] = asyncio.create_task(answer_timer(ctx, team))
 
 @bot.command()
 async def answer(ctx, *, content=None):
     user = ctx.author.name
-    for team, members in state["teams"].items():
-        if user in members:
-            if state["buzzed_team"] == team:
-                if state["answer_timer"]:
-                    state["answer_timer"].cancel()
-                    state["answer_timer"] = None
-                await ctx.send(f"🗣️ **{team}**'s answer: {content}")
-                log_event(f"{team} answered: {content}")
-            else:
-                state["score"][team] -= 10
-                await ctx.send(f"⛔ {team}, it's not your turn! Wait for the buzzer. -10 points.")
-                log_event(f"{team} answered out of turn. -10 points.")
-            return
+    team = next((t for t, m in state["teams"].items() if user in m), None)
+    if not team:
+        await ctx.send("⚠️ You're not part of any team.")
+        return
+
+    if team == state["buzzed_team"]:
+        if state["answer_timer"]:
+            state["answer_timer"].cancel()
+            state["answer_timer"] = None
+        await ctx.send(f"🗣️ **{team}**'s answer: {content}")
+        log_event(f"{team} answered: {content}")
+    else:
+        state["score"][team] -= 10
+        await ctx.send(f"⛔ {team}, it's not your turn! -10 points.")
+        log_event(f"{team} answered out of turn. -10 points.")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -215,10 +207,23 @@ async def correct(ctx):
         state["question_active"] = False
         if state["question_count"] % 4 == 0:
             await score(ctx)
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         await ask_next(ctx)
     else:
         await ctx.send("⚠️ No team is currently answering.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def skip(ctx):
+    await ctx.send("⏭️ Skipping this question...")
+    log_event(f"Q{state['question_count']}: Skipped manually.")
+    state["question_active"] = False
+    if state.get("answer_timer"):
+        state["answer_timer"].cancel()
+    if state.get("no_buzz_timer"):
+        state["no_buzz_timer"].cancel()
+    await ask_next(ctx)
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -250,24 +255,23 @@ async def end(ctx):
     log_event("🔚 Quiz ended early.")
     if state.get("answer_timer"):
         state["answer_timer"].cancel()
-        state["answer_timer"] = None
     if state.get("no_buzz_timer"):
         state["no_buzz_timer"].cancel()
-        state["no_buzz_timer"] = None
-    state["current_index"] = -1
-    state["question_count"] = 0
-    state["current_question"] = None
-    state["buzzed_team"] = None
-    state["buzz_order"] = []
-    state["question_active"] = False
-    state["score"] = {team: 0 for team in state["teams"]}
+    state.update({
+        "current_index": -1,
+        "question_count": 0,
+        "current_question": None,
+        "buzzed_team": None,
+        "buzz_order": [],
+        "question_active": False,
+        "score": {team: 0 for team in state["teams"]}
+    })
 
 @bot.command()
 async def teams(ctx):
     if not state["teams"]:
         await ctx.send("❌ No teams have been created yet.")
         return
-
     msg = "**👥 Current Teams:**\n"
     for team, members in state["teams"].items():
         msg += f"• **{team}** ({len(members)} members): {', '.join(members)}\n"
@@ -283,6 +287,25 @@ async def leave(ctx):
             return
     await ctx.send("⚠️ You're not part of any team.")
 
-
+@bot.command()
+async def help(ctx):
+    embed = discord.Embed(
+        title="📖 Quiz Bot Commands",
+        description="Here's a list of commands you can use!",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="🟢 !join <team>", value="Join an existing team", inline=False)
+    embed.add_field(name="🆕 !confirm_create <team>", value="Create a new team", inline=False)
+    embed.add_field(name="📢 !buzz", value="Buzz in to answer the current question", inline=False)
+    embed.add_field(name="🗣️ !answer <text>", value="Submit your answer when buzzed", inline=False)
+    embed.add_field(name="✅ !correct", value="(Admin) Mark current answer as correct", inline=False)
+    embed.add_field(name="❌ !wrong", value="(Admin) Mark current answer as incorrect", inline=False)
+    embed.add_field(name="📊 !score", value="Check team scores", inline=False)
+    embed.add_field(name="👥 !teams", value="List all teams and members", inline=False)
+    embed.add_field(name="👋 !leave", value="Leave your current team", inline=False)
+    embed.add_field(name="🛑 !end", value="(Admin) End the quiz early", inline=False)
+    embed.add_field(name="⏭️ !skip", value="(Admin) Skip the current question", inline=False)
+    embed.set_footer(text="Good luck and buzz responsibly!")
+    await ctx.send(embed=embed)
 
 bot.run(TOKEN)

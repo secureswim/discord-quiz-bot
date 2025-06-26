@@ -64,4 +64,5 @@ Notes
 - Only users with administrator privileges on the server can start/end the quiz or mark answers as correct or incorrect.
 - The bot supports multiple teams and manages answer timing automatically with a visible countdown.
 - The project uses the `discord.py`, `pandas`, and `python-dotenv` libraries.
+- This bot is live and deployed via Render for continuous hosting and operation.
 

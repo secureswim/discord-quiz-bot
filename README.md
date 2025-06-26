@@ -29,6 +29,7 @@ Commands
 | !end                     | Admin only     | End the quiz early and reset the state                    |
 | !teams                   | Any user       | Display existing teams                                    |
 | !leave                   | Any user       | Leave current team                                        |
+| !skip                    | Admin          | Skip current question                                      
 
 Setup Instructions
 ------------------
